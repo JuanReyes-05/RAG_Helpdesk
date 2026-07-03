@@ -40,12 +40,14 @@ Arquitectura en capas estilo DDD (Domain-Driven Design) sobre FastAPI: `api` →
 │   ─ admin.py      POST /ingest                                                │
 │                                                                               │
 │   Dependency Injection           app/api/dependencies.py                      │
-│   ─ SettingsDep   RAGServiceDep   RoutingServiceDep                           │
+│   ─ SettingsDep   RAGServiceDep   RoutingServiceDep   IntentClassifierServiceDep │
 └──────────────────────────────┬───────────────────────────────────────────────┘
                                │
                                ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │   Services (casos de uso)        app/services/                                │
+│                                                                               │
+│       intent_classifier_service.py  ── clasifica smalltalk vs consulta        │
 │                                                                               │
 │       rag_service.py                                                          │
 │       (orquestador)                                                           │
@@ -78,7 +80,7 @@ Arquitectura en capas estilo DDD (Domain-Driven Design) sobre FastAPI: `api` →
 │                                                                               │
 │   Schemas / DTOs                 app/schemas/                                 │
 │   ─ PreguntaRequest · PreguntaResponse · FuenteResponse · HealthResponse      │
-│   ─ IngestRequest   · AccionRouter (enum)                                     │
+│   ─ IngestRequest   · AccionRouter (enum)   · TipoIntencion (enum)            │
 │                                                                               │
 │   Core (cross-cutting)           app/core/                                    │
 │   ─ config.py (Settings)   ─ prompts.py   ─ logging.py                        │
@@ -125,7 +127,7 @@ La capa API **no conoce** ChromaDB ni OpenAI directamente: solo interactúa con 
 ## Estructura del Proyecto
 
 ```
-MiProyecto_IAEngineering/
+RAG_Helpdesk/
 │
 ├── backend/                                  # API FastAPI (gestionado con uv)
 │   ├── app/                                  # Paquete principal (from app.xxx)
@@ -143,10 +145,11 @@ MiProyecto_IAEngineering/
 │   │   ├── core/                             # Cross-cutting concerns
 │   │   │   ├── config.py                     # Settings (pydantic-settings)
 │   │   │   ├── logging.py
-│   │   │   └── prompts.py                    # PROMPT_SISTEMA, PROMPT_SCORE, PROMPT_DERIVACION
+│   │   │   └── prompts.py                    # PROMPT_SISTEMA, PROMPT_SCORE, PROMPT_DERIVACION,
+│   │   │                                     # PROMPT_CLASIFICACION_INTENCION, RESPUESTAS_SMALLTALK
 │   │   │
 │   │   ├── schemas/                          # DTOs
-│   │   │   ├── enums.py                      # AccionRouter
+│   │   │   ├── enums.py                      # AccionRouter, TipoIntencion
 │   │   │   ├── consulta.py                   # PreguntaRequest, PreguntaResponse, FuenteResponse
 │   │   │   ├── sistema.py                    # HealthResponse
 │   │   │   └── admin.py                      # IngestRequest
@@ -161,6 +164,7 @@ MiProyecto_IAEngineering/
 │   │   │
 │   │   ├── services/                         # Lógica de negocio
 │   │   │   ├── interfaces.py                 # Protocols de services
+│   │   │   ├── intent_classifier_service.py  # Clasificador smalltalk vs consulta (LLM)
 │   │   │   ├── retrieval_service.py
 │   │   │   ├── generation_service.py
 │   │   │   ├── scoring_service.py            # ScoringService + DerivationService
@@ -177,9 +181,10 @@ MiProyecto_IAEngineering/
 │   │   └── diagnostico.py
 │   ├── tests/
 │   │   ├── conftest.py                       # fixture `settings`
-│   │   └── unit/services/test_routing_service.py
+│   │   └── unit/services/
+│   │       ├── test_routing_service.py
+│   │       └── test_intent_classifier_service.py
 │   ├── docs/                                 # Base de conocimiento (ingestada al vector store)
-│   │   ├── PRD.md
 │   │   ├── guia_vpn.md
 │   │   ├── politicas_soporte.md
 │   │   └── preguntas_frecuentes.txt
@@ -197,7 +202,6 @@ MiProyecto_IAEngineering/
 ├── docker-compose.yml
 ├── .env.example
 ├── .gitignore
-├── AGENTS.md                                 # Guía para agentes de IA
 └── README.md
 ```
 
@@ -212,32 +216,43 @@ Usuario
   │  POST /ask { "pregunta": "...", "usuario_id": "..." }
   ▼
 api/v1/consultas.py
-  │  rag.consultar(pregunta)
+  │
+  ├─►  intent_classifier.clasificar(pregunta)      ── LLM: 1 llamada
+  │       ├── SALUDO | DESPEDIDA | AGRADECIMIENTO |
+  │       │   IDENTIDAD | CAPACIDADES | OTRO
+  │       │       └─► respuesta canned (RESPUESTAS_SMALLTALK)
+  │       │           accion = RESPONDER, score = 1.0, fuentes = []
+  │       │           RETURN  (no toca el pipeline RAG)
+  │       │
+  │       └── CONSULTA_SOPORTE  → sigue al pipeline ▼
+  │
+  ├─►  rag.consultar(pregunta)
+  │       │
+  │       ▼
+  │   services/rag_service.py  (orquestador)
+  │       │
+  │       ├── retrieval_service.recuperar(pregunta)
+  │       │     └─► chroma_repository.buscar()  →  list[Fragmento]
+  │       │
+  │       ├── generation_service.generar(pregunta, fragmentos)
+  │       │     └─► llm_client.invoke(PROMPT_SISTEMA)  →  str
+  │       │
+  │       ├── scoring_service.calcular(pregunta, respuesta)
+  │       │     └─► llm_client.invoke(PROMPT_SCORE)  →  float 0.0-1.0
+  │       │
+  │       └── derivation_service.requiere_derivacion(pregunta)
+  │             └─► llm_client.invoke(PROMPT_DERIVACION)  →  bool
+  │       │
+  │       ▼  RespuestaInterna (dominio)
+  │
+  └─►  routing_service.definir_accion(score, tiene_info, requiere_derivacion, pregunta)
+        ├── palabra_escalacion  →  ESCALAR
+        ├── score < 0.3         →  ESCALAR
+        ├── tiene_info && score > min && requiere_derivacion  →  DERIVAR
+        ├── tiene_info && score > min                         →  RESPONDER
+        └── default             →  ESCALAR
   ▼
-services/rag_service.py  (orquestador)
-  │
-  ├── retrieval_service.recuperar(pregunta)
-  │     └─► chroma_repository.buscar()  →  list[Fragmento]
-  │
-  ├── generation_service.generar(pregunta, fragmentos)
-  │     └─► llm_client.invoke(PROMPT_SISTEMA)  →  str
-  │
-  ├── scoring_service.calcular(pregunta, respuesta)
-  │     └─► llm_client.invoke(PROMPT_SCORE)  →  float 0.0-1.0
-  │
-  └── derivation_service.requiere_derivacion(pregunta)
-        └─► llm_client.invoke(PROMPT_DERIVACION)  →  bool
-  │
-  ▼  RespuestaInterna (dominio)
-api/v1/consultas.py
-  │  routing_service.definir_accion(score, tiene_info, requiere_derivacion, pregunta)
-  │     ├── palabra_escalacion  →  ESCALAR
-  │     ├── score < 0.3         →  ESCALAR
-  │     ├── tiene_info && score > min && requiere_derivacion  →  DERIVAR
-  │     ├── tiene_info && score > min                         →  RESPONDER
-  │     └── default             →  ESCALAR
-  ▼
-PreguntaResponse (DTO)  +  BackgroundTask: registrar_interaccion()
+PreguntaResponse (DTO)  +  BackgroundTask: registrar_interaccion(intencion, ...)
 ```
 
 ---
@@ -283,9 +298,11 @@ curl -X POST http://localhost:8000/ask \
 
 | Accion | Condicion |
 |--------|-----------|
-| `responder` | Confianza >= `MINIMUM_SCORE` y sin derivación ni escalación |
-| `derivar_ticket` | Confianza >= `MINIMUM_SCORE` y LLM detecta necesidad de 2do nivel |
-| `escalar_humano` | Confianza < 0.3, keyword crítica en la pregunta o sin info suficiente |
+| `responder` | El clasificador detecta smalltalk (SALUDO, DESPEDIDA, AGRADECIMIENTO, IDENTIDAD, CAPACIDADES, OTRO) → respuesta canned con score=1.0, sin fuentes. También cuando el pipeline RAG devuelve confianza ≥ `MINIMUM_SCORE` y no requiere derivación ni escalación. |
+| `derivar_ticket` | Confianza ≥ `MINIMUM_SCORE` y el LLM detecta necesidad de 2do nivel (reclamo, falla persistente, reembolso). |
+| `escalar_humano` | Confianza < 0.3, keyword crítica en la pregunta (`urgente`, `supervisor`, `fraude`, ...) o sin info suficiente en la base de conocimiento. |
+
+> Los mensajes clasificados como smalltalk **no invocan** el pipeline RAG (no hay retrieval ni scoring). Se consume una única llamada al LLM para la clasificación y se devuelve un texto canned definido en `RESPUESTAS_SMALLTALK` (`app/core/prompts.py`).
 
 ---
 
@@ -488,5 +505,3 @@ La estrategia es usar los `Protocol` de `services/interfaces.py` y `repositories
 | **Etapa 1** | En progreso | Ingesta de historial de emails, mejora de scoring |
 | **Etapa 2** | Planeada | Integración con ServiceDesk, evaluador QA |
 | **Etapa 3** | Planeada | Hardening: caching, observabilidad, PII redaction, JWT |
-
-Ver [`docs/PRD.md`](docs/PRD.md) para la especificación completa.
