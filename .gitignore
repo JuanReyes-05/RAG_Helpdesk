@@ -16,5 +16,6 @@ results_comparison.json
 .claude/
 interacciones.log
 AGENTS.md
+instrucciones.md
 .agents/
 docs/
