@@ -1,0 +1,17 @@
+venv/
+.venv/
+__pycache__/
+# uv: caché local (los uv.lock SÍ se commitean)
+.uv-cache/
+.env
+*.pyc
+.pytest_cache/
+chroma_db/
+chroma_test/
+chroma_db_advanced/
+data/chroma_db/
+data/chroma_test/
+results_baseline.json
+results_comparison.json
+.claude/
+interacciones.log

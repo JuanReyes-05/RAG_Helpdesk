@@ -1,0 +1,14 @@
+[project]
+name = "helpdesk-frontend"
+version = "1.0.0"
+description = "UI Streamlit para Helpdesk AI"
+readme = "../README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "streamlit==1.39.0",
+    "requests==2.32.3",
+    "python-dotenv==1.0.1",
+]
+
+[tool.uv]
+package = false

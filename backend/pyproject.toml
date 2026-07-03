@@ -1,0 +1,37 @@
+[project]
+name = "helpdesk-backend"
+version = "1.0.0"
+description = "API RAG de soporte al cliente (Helpdesk AI)"
+readme = "../README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "langchain==0.3.28",
+    "langchain-openai==0.3.35",
+    "langchain-community==0.3.27",
+    "langchain-huggingface==0.3.1",
+    "langchain-text-splitters==0.3.11",
+    "langchain-chroma==0.2.6",
+    "chromadb==1.5.8",
+    "sentence-transformers==5.4.1",
+    "fastapi==0.115.0",
+    "uvicorn[standard]==0.30.6",
+    "pydantic==2.9.2",
+    "pydantic-settings==2.5.2",
+    "python-dotenv==1.0.1",
+    "requests==2.32.3",
+    "structlog==24.4.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.uv]
+# App, no librería publicable: uv gestiona el entorno pero no construye ni instala
+# el paquete `app` (los servicios se importan con `from app.xxx` desde backend/).
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
