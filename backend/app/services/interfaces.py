@@ -3,7 +3,7 @@ from typing import Optional, Protocol
 
 from app.domain.consulta import RespuestaInterna
 from app.domain.fragmento import Fragmento
-from app.schemas.enums import AccionRouter
+from app.schemas.enums import AccionRouter, TipoIntencion
 
 
 class RetrievalService(Protocol):
@@ -26,6 +26,10 @@ class RoutingService(Protocol):
     def definir_accion(
         self, score: float, tiene_info: bool, requiere_derivacion: bool, pregunta: str
     ) -> AccionRouter: ...
+
+
+class IntentClassifierService(Protocol):
+    def clasificar(self, pregunta: str) -> TipoIntencion: ...
 
 
 class RAGService(Protocol):

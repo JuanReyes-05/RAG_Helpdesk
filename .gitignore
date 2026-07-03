@@ -15,3 +15,6 @@ results_baseline.json
 results_comparison.json
 .claude/
 interacciones.log
+AGENTS.md
+.agents/
+docs/

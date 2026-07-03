@@ -13,6 +13,7 @@ from app.infrastructure.embeddings_client import build_embeddings
 from app.infrastructure.llm_client import OpenAILLMClient
 from app.repositories.chroma_repository import ChromaRepository
 from app.services.generation_service import GenerationServiceImpl
+from app.services.intent_classifier_service import IntentClassifierServiceImpl
 from app.services.rag_service import RAGServiceImpl
 from app.services.retrieval_service import RetrievalServiceImpl
 from app.services.routing_service import RoutingServiceImpl
@@ -87,6 +88,9 @@ async def lifespan(app: FastAPI):
 
     app.state.settings = settings
     app.state.routing_service = RoutingServiceImpl(settings)
+    app.state.intent_classifier_service = IntentClassifierServiceImpl(
+        OpenAILLMClient(settings)
+    )
 
     def rebuild_rag_service() -> None:
         new_rag, _ = _build_rag_service(settings)

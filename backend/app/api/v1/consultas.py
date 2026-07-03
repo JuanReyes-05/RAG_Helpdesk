@@ -6,9 +6,16 @@ from datetime import datetime
 import structlog
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
-from app.api.dependencies import RAGServiceDep, RoutingServiceDep
+from app.api.dependencies import (
+    IntentClassifierServiceDep,
+    RAGServiceDep,
+    RoutingServiceDep,
+    SettingsDep,
+)
 from app.core.logging import get_logger
+from app.core.prompts import RESPUESTAS_SMALLTALK
 from app.schemas.consulta import FuenteResponse, PreguntaRequest, PreguntaResponse
+from app.schemas.enums import AccionRouter, TipoIntencion
 
 logger = get_logger(__name__)
 
@@ -20,11 +27,13 @@ def registrar_interaccion(
     pregunta: str,
     respuesta: PreguntaResponse,
     duration_ms: float,
+    intencion: TipoIntencion,
 ) -> None:
     """Emite un evento estructurado con el resumen de la interacción."""
     logger.info(
         "interaccion_registrada",
         consulta_id=consulta_id,
+        intencion=intencion.value,
         accion=respuesta.accion.value,
         score=respuesta.score_confianza,
         tiene_info=respuesta.tiene_info,
@@ -36,14 +45,40 @@ def registrar_interaccion(
     )
 
 
+def _construir_respuesta_smalltalk(
+    consulta_id: str,
+    intencion: TipoIntencion,
+    modelo: str,
+) -> PreguntaResponse:
+    """Empaqueta una respuesta canned para intenciones de small-talk."""
+    return PreguntaResponse(
+        consulta_id=consulta_id,
+        respuesta=RESPUESTAS_SMALLTALK[intencion],
+        accion=AccionRouter.RESPONDER,
+        score_confianza=1.0,
+        tiene_info=True,
+        fuentes=[],
+        modelo=modelo,
+        timestamp=datetime.now().isoformat(),
+    )
+
+
 @router.post("/ask", response_model=PreguntaResponse)
 async def preguntar(
     request: PreguntaRequest,
     background_tasks: BackgroundTasks,
     rag: RAGServiceDep,
     routing: RoutingServiceDep,
+    intent_classifier: IntentClassifierServiceDep,
+    settings: SettingsDep,
 ):
-    """Procesa una pregunta y devuelve respuesta + acción recomendada."""
+    """Procesa una pregunta y devuelve respuesta + acción recomendada.
+
+    Flujo:
+    1. Clasificador de intención (LLM) diferencia small-talk vs consulta real.
+    2. Small-talk → respuesta canned inmediata, sin pipeline RAG.
+    3. Consulta real → retrieval + generation + scoring + routing.
+    """
     consulta_id = str(uuid.uuid4())
     structlog.contextvars.bind_contextvars(
         consulta_id=consulta_id,
@@ -51,6 +86,25 @@ async def preguntar(
     )
     start = time.perf_counter()
     try:
+        intencion = intent_classifier.clasificar(request.pregunta)
+
+        if intencion != TipoIntencion.CONSULTA_SOPORTE:
+            respuesta = _construir_respuesta_smalltalk(
+                consulta_id=consulta_id,
+                intencion=intencion,
+                modelo=settings.llm_model,
+            )
+            duration_ms = round((time.perf_counter() - start) * 1000, 2)
+            background_tasks.add_task(
+                registrar_interaccion,
+                consulta_id,
+                request.pregunta,
+                respuesta,
+                duration_ms,
+                intencion,
+            )
+            return respuesta
+
         resultado = rag.consultar(
             pregunta=request.pregunta,
             usuario_id=request.usuario_id,
@@ -88,7 +142,12 @@ async def preguntar(
 
         duration_ms = round((time.perf_counter() - start) * 1000, 2)
         background_tasks.add_task(
-            registrar_interaccion, consulta_id, request.pregunta, respuesta, duration_ms
+            registrar_interaccion,
+            consulta_id,
+            request.pregunta,
+            respuesta,
+            duration_ms,
+            intencion,
         )
 
         return respuesta
